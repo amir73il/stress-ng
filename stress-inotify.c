@@ -456,22 +456,34 @@ static void inotify_attrib_file(
 static int inotify_access_helper(
 	const stress_args_t *args,
 	const char *path,
-	const void *signum)
+	const void *private)
 {
 	int fd;
 	char buffer[1];
 	int rc = 0;
 
-	(void)signum;
-	if ((fd = open(path, O_RDONLY)) < 0) {
+	int flags = *(int *)private;
+	if ((fd = open(path, flags)) < 0) {
 		pr_err("%s: cannot open file %s: errno=%d (%s)\n",
 			args->name, path, errno, strerror(errno));
 		return -1;
 	}
 
+	if ((flags & O_ACCMODE) == O_RDONLY)
+		goto do_access;
+
+do_modify:
+	if (keep_stressing(args) && (write(fd, buffer, 1) < 0)) {
+		if ((errno == EAGAIN) || (errno == EINTR))
+			goto do_modify;
+		pr_err("%s: cannot write to file %s: errno=%d (%s)\n",
+			args->name, path, errno, strerror(errno));
+		rc = -1;
+	}
+
 	/* Just want to force an access */
 do_access:
-	if (keep_stressing(args) && (read(fd, buffer, 1) < 0)) {
+	if (!rc && keep_stressing(args) && (read(fd, buffer, 1) < 0)) {
 		if ((errno == EAGAIN) || (errno == EINTR))
 			goto do_access;
 		pr_err("%s: cannot read file %s: errno=%d (%s)\n",
@@ -482,7 +494,7 @@ do_access:
 	return rc;
 }
 
-static void inotify_access_file(
+static void inotify_access_file(int open_flags,
 	const stress_args_t *args,
 	const char *path,
 	const int bad_fd)
@@ -494,8 +506,24 @@ static void inotify_access_file(
 		return;
 
 	inotify_exercise(args, filepath, path, "inotify_file",
-		inotify_access_helper, IN_ACCESS, NULL, bad_fd);
+		inotify_access_helper, IN_ACCESS, &open_flags, bad_fd);
 	(void)rm_file(args, filepath);
+}
+
+static void inotify_access_ro_file(
+	const stress_args_t *args,
+	const char *path,
+	const int bad_fd)
+{
+	inotify_access_file(O_RDONLY, args, path, bad_fd);
+}
+
+static void inotify_access_rw_file(
+	const stress_args_t *args,
+	const char *path,
+	const int bad_fd)
+{
+	inotify_access_file(O_RDWR, args, path, bad_fd);
 }
 #endif
 
@@ -857,7 +885,8 @@ static void inotify_close_nowrite_file(
 
 static const stress_inotify_t inotify_stressors[] = {
 #if defined(IN_ACCESS)
-	{ inotify_access_file,		"IN_ACCESS" },
+	{ inotify_access_ro_file,	"IN_ACCESS" },
+	{ inotify_access_rw_file,	"IN_ACCESS" },
 #endif
 #if defined(IN_MODIFY)
 	{ inotify_modify_file,		"IN_MODIFY" },
